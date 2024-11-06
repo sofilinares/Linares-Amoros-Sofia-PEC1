@@ -1,0 +1,291 @@
+---
+title: "PEC 1 DATOS ÓMICOS"
+author: "Sofia Linares"
+date: "2024-11-02"
+output: html_document
+---
+1. Seleccionar un dataset de metabolómica que podéis obtener de
+o Este repositorio de github: https://github.com/nutrimetabolomics/metaboData/
+
+  Se selecciona el dataset: 2024-Cachexia
+
+2. Una vez descargados los datos cread un contenedor del tipo SummarizedExperiment que contenga los datos y los metadatos (información acerca del dataset, las filas y las columnas). La clase SummarizedExperiment es una extensión de ExpressionSet y muchas aplicaciones o bases de datos (como metabolomicsWorkbench) lo utilizan en vez de usar expressionSet.
+
+```{r }
+
+library(SummarizedExperiment)
+library(readr)
+
+# Leer el archivo
+human_cachexia <- read_csv("C:/Users/sofia/OneDrive/Escritorio/Master Bioinformática y Bioestadística UOC/Análisis de datos ómicos/PEC 1/human_cachexia.csv")
+
+# Extraer los datos numéricos, excluyendo Patient ID y Muscle loss
+datos <- as.matrix(human_cachexia[, -c(1, 2)])  
+
+# Transponer la matriz de datos para que las filas sean los metabolitos y las columnas los pacientes
+datos <- t(datos)
+
+# Crear rowData con información de los metabolitos 
+row_data <- DataFrame(variable = rownames(datos))
+rownames(row_data) <- rownames(datos)  # Asignar nombres de metabolitos a rowData
+
+# Crear colData con la variable 'Muscle loss' para cada paciente
+col_data <- DataFrame(muscle_loss = human_cachexia$`Muscle loss`)
+rownames(col_data) <- human_cachexia$`Patient ID`  
+
+# Añadir metadatos para describir el experimento
+metadata <- list(
+    titulo = "Conjunto de Datos del Estudio de Caquexia Humana",
+    descripcion = "Este conjunto de datos incluye mediciones de marcadores metabólicos y el estado de pérdida muscular en pacientes de un estudio sobre caquexia. Este es el famoso conjunto de datos de caquexia utilizado en varios tutoriales de MetaboAnalyst.",
+    fuente = "MetabolomicsWorkbench",
+    url = "https://rest.xialab.ca/api/download/metaboanalyst/human_cachexia.csv",
+    sanity_check = "Satisfactoria",
+    sample_pairing = "Las muestras no están emparejadas.",
+    grupos = "Se detectaron 2 grupos en las muestras: Control y Cachexicos.",
+    valores_datos = "Todos los valores de datos son numéricos.",
+    missing_values = "Se detectaron un total de 0 (0%) valores faltantes."
+)
+
+
+# Crear el SummarizedExperiment
+se <- SummarizedExperiment(
+    assays = list(counts = datos),
+    rowData = row_data,
+    colData = col_data,
+    metadata = metadata
+)
+
+str(se)
+
+
+
+
+```
+
+
+La matriz "datos" contiene los resultados obtenidos de los metabolitos a estudio, excluyendo tanto Patient ID como Muscle loss.
+
+En colData se incluye la variable Muscle loss, que tiene la información de los pacientes (control y cachexic).
+
+
+
+3. Llevad a cabo una exploración del dataset que os proporcione una visión general del mismo en la línea de lo que hemos visto en las actividades.
+
+Incialmente se lleva a cabo un análisis descriptivo de los datos: 
+
+```{r }
+
+#Estadística descriptiva sobre los metabolitos:
+
+library(matrixStats)
+
+# Calcular medias, varianzas, mínimo, máximo y mediana para cada metabolito
+metabolito_media <- rowMeans(datos, na.rm = TRUE)
+metabolito_varianza <- rowVars(datos, na.rm = TRUE)
+metabolito_minimo <- rowMins(datos, na.rm = TRUE)
+metabolito_maximo <- rowMaxs(datos, na.rm = TRUE)
+metabolito_mediana <- rowMedians(datos, na.rm = TRUE)
+
+# Crear un dataframe con los resultados
+metabolitos_resumen <- data.frame(
+  Metabolito = rownames(datos),
+  Media = metabolito_media,
+  Varianza = metabolito_varianza,
+  Minimo = metabolito_minimo,
+  Maximo = metabolito_maximo,
+  Mediana = metabolito_mediana
+)
+
+
+print(metabolitos_resumen[, -1])
+```
+
+A continuación, se realiza un análisis de correlación de las variables numéricas:
+
+```{r }
+library(corrplot)
+
+# Obtener los nombres de los metabolitos desde las filas de 'datos'
+metabolitos <- rownames(datos)
+
+# Reemplazar los nombres de los metabolitos por números
+nombres_numericos <- as.character(1:length(metabolitos))
+
+# Crear las equivalencias (número : nombre del metabolito)
+equivalencias_texto <- paste(nombres_numericos, ":", metabolitos)
+
+# Imprimir las equivalencias en la consola
+cat("Equivalencias de los metabolitos:\n")
+cat(equivalencias_texto, sep = "\n")
+
+# Calcular la matriz de correlación (usando la transposición de los datos)
+correlacion <- cor(t(datos)) 
+
+# Cambiar los nombres de las filas y columnas de la matriz de correlación a los números
+colnames(correlacion) <- rownames(correlacion) <- nombres_numericos
+
+# Crear el gráfico de la matriz de correlación con los nombres numéricos
+corrplot(correlacion, method = "circle", type = "upper", tl.col = "black", tl.srt = 0, 
+         tl.cex = 0.4, tl.offset = 0.5, pch.cex = 1.5) 
+
+
+```
+
+Existe una fuerte correlación positiva en algunas de las variables (azul oscuro), se observan casi todos los puntos con tonalidades azules y por tanto, las correlaciones son positivas en la mayoría de los casos. 
+
+Ahora se va a realizar un análisis comparativo de los diferentes metabolitos según al grupo de pacientes que pertenece para buscar si existen diferencias significativas: 
+
+```{r }
+# Convertir la variable muscle_loss a factor y obtener los grupos de estudio
+se$muscle_loss <- as.factor(se$muscle_loss)
+grupos <- se$muscle_loss
+table(grupos)
+
+# Calcula una prueba t para cada metabolito y almacena los p-valores
+t_test <- data.frame(
+  metabolito = rownames(datos),
+  p_valor = apply(datos, 1, function(metabolito) {
+    t.test(metabolito ~ grupos)$p.value
+  })
+)
+
+# Aplica una corrección por comparaciones múltiples (FDR)
+t_test$ajustado <- p.adjust(t_test$p_valor, method = "fdr")
+
+# Filtra los metabolitos con diferencias significativas ( p < 0.05)
+metabolitos_significativos <- t_test[t_test$ajustado < 0.05, ]
+metabolitos_significativos <- metabolitos_significativos[order(metabolitos_significativos$ajustado), ]
+
+# Muestra los metabolitos significativamente diferentes
+print(metabolitos_significativos [, -1])
+
+
+```
+
+
+
+En el estudio hay 47 pacientes con caquexia y 30 pacientes control. Para analizar qué metabolitos se asocian con caquexia, se lleva a cabo una prueba t de Student (se asume normalidad y homogeneidad de varianzas) de los valores de los pacientes con caquexia y los controles. A continuación, se  aplica una corrección para pruebas múltiples para identificar los metabolitos con diferencias significativas.
+
+Se obtiene un listado de los metabolitos que presentan diferencias significativas (p < 0.05) entre los dos grupos, por tanto, estos metabolitos tendrán, a priori, una mayor asociación con la caquexia. 
+
+
+```{r }
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(patchwork)
+library(ggplot2)
+library(gridExtra)  
+
+datos_df <- as.data.frame(t(datos))
+datos_df$Group <- grupos
+colnames(datos_df) <- make.names(colnames(datos_df))
+
+
+
+# Crear una lista vacía para almacenar los gráficos
+grafico_lista <- list()
+
+for (i in seq_len(nrow(metabolitos_significativos))) {
+  metabolito <- metabolitos_significativos$metabolito[i]
+  
+  # Verificar si el metabolito está en las columnas de datos_df
+  if (metabolito %in% colnames(datos_df)) {
+    # Crear el gráfico sin título
+    p <- ggplot(datos_df, aes_string(x = "Group", y = metabolito)) +
+      geom_boxplot(aes(fill = Group)) +
+      labs(x = "Grupo", y = metabolito) +  # Eliminar el título
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            legend.position = "none",
+            axis.title.x = element_blank())  
+    
+    # Almacenar el gráfico en la lista
+    grafico_lista[[metabolito]] <- p
+  }
+  
+}
+
+
+grafico_sublistas <- split(grafico_lista, ceiling(seq_along(grafico_lista) / 4))
+
+
+for (sublista in grafico_sublistas) {
+  do.call(grid.arrange, c(sublista, ncol = 4)) 
+}
+
+
+```
+
+
+Los metabolitos que presentan diferencias significativas entre los dos grupos muestran valores más altos en el grupo con caquexia en comparación con el grupo Control.
+
+
+Nos encontramos con un estudio con una gran cantidad de variables y por tanto, el análisis de componentes principales (PCA) podría ser un buen enfoque ya que transforma un conjunto de variables posiblemente correlacionadas en un conjunto de variables no correlacionadas, reduciendo la dimensionalidad. 
+
+
+```{r }
+datos_pca <- as.data.frame(t(datos))
+pca_result <- prcomp(datos_pca, scale. = TRUE)
+summary(pca_result)
+
+cargas <- pca_result$rotation  # Cargas de cada componente
+
+# Cargas de la Componente Principal 1
+cargas_PC1 <- cargas[, 1]  
+cargas_PC1_ordenadas <- sort(cargas_PC1, decreasing = TRUE)
+cargas_PC1_ordenadas
+
+# Cargas de la Componente Principal 2
+cargas_PC2 <- cargas[, 2]  
+cargas_PC2_ordenadas <- sort(cargas_PC2, decreasing = TRUE)
+cargas_PC2_ordenadas
+
+
+#Según el grupo
+
+puntuaciones_pca <- as.data.frame(pca_result$x)
+puntuaciones_pca$muscle_loss <- colData(se)$muscle_loss
+
+
+# Visualiza las primeras dos componentes principales
+library(ggplot2)
+ggplot(puntuaciones_pca, aes(x = PC1, y = PC2, color = muscle_loss)) +
+  geom_point(size = 3) +
+  labs(title = "Gráfico PCA: Componentes Principales por Estado de Caquexia",
+       x = "Componente Principal 1",
+       y = "Componente Principal 2") +
+  theme_minimal()
+
+# Comparar medias de la PC1
+t.test(PC1 ~ muscle_loss, data = puntuaciones_pca)
+
+# Comparar medias de la PC2
+t.test(PC2 ~ muscle_loss, data = puntuaciones_pca)
+
+
+
+
+
+
+
+
+```
+
+La primera componente principal explica un 40,43% de la variabilidad
+
+Los metabolitos creatinina y glutamina tienen las cargas más altas (0.1755 y 0.1709, respectivamente), lo que indica que estas dos variables son las que más contribuyen a la PC1. Un aumento en estas variables se correlaciona con un aumento en la puntuación de PC1. Todas las variables mostradas tienen cargas positivas, lo que significa que aumentos en estas variables están asociados con un aumento en PC1.
+LA PC2 explica un 8.18% adicional, siendo Acetato y 3-Hidroxiisovalerato (0.2192 y 0.2046, respectivamente) las que más contribuyen a la PC2.
+
+
+En el gráfico de dispersión de PCA, usando PC1 y PC2, se representan según el grupo al que pertenece el paciente. Esto permite evaluar visualmente si existen agrupaciones diferenciadas entre grupos.
+Se aprecian diferencias, sobre todo en PC1, que son más altas en el grupo con caquexia que el grupo control.
+
+La prueba t en PC1 muestra un valor p de 6.133e-05, indicando una diferencia significativa en las medias entre los dos grupos. Además, la diferencia de medias entre los grupos es importante, los pacientes con caquexia tienen una media positiva (1.636), mientras que las de control tienen una media negativa (-2.564).
+
+En cambio, la prueba t en PC2 muestra un valor p de 0.3344, por tanto, no existe una diferencia significativa en las medias de PC2 entre los grupos. 
+
+Se llega a la conclusión de que PC1 es la componente principal que muestra una diferencia significativa entre los grupos de caquexia y control. La diferencia de medias y el valor p extremadamente bajo sugieren que PC1 podría estar relacionado con cambios metabólicos importantes asociados con la caquexia. En cambio en PC2, las diferencias entre los grupos no son relevantes. 
+
+5. Cread un repositorio de github --> https://github.com/sofilinares/Linares-Amoros-Sofia-PEC1
+
